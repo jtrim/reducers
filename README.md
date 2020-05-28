@@ -1,6 +1,14 @@
+# Reducers
+
+https://github.com/jtrim/reducers
+
+_Reducers_ provides a handy interface for defining use-case objects, as well as provides a way to organize and pipeline the execution of use case objects in series.
+
+A similar alternative library to reducers is https://github.com/collectiveidea/interactor.
+
 ### Actors
 
-An `Actor` encapsulates an atomic unit of work, or in other words, it does one thing. This 'thing' _could_ be something as simple as updating a single record in the database, but in practice they tend to be made up of a multi-step transactional workflow (e.g. the debt rollover disbursement is a good example).
+An `Actor` encapsulates an atomic unit of work, or in other words, it does one thing. This 'thing' _could_ be something as simple as updating a single record in the database, but in practice they tend to be made up of a multi-step transactional workflow (e.g. updating a user, then updating contacts, then sending an email, all as an atomic operation). _Note: the usage of the term 'Actor' here should not be confused with the [actor pattern](https://en.wikipedia.org/wiki/Actor_model)._
 
 At its core, an `Actor` class responds to `::call` and `::call!`, which are the only two API methods consumers of actor classes need to know. Both take a hash as the only argument:
 
@@ -26,7 +34,7 @@ The simplest definition of an actor might look like:
 class DoSomething < Reducers::Actor
   no_params
   no_result
-  
+
   def call
     puts 'Did something!'
   end
@@ -41,7 +49,7 @@ end
 class DoSomething < Reducers::Actor
   params :something
   result :something_else
-  
+
   def call
     result.something_else = params.something.else
   end
@@ -54,15 +62,15 @@ Actors automatically validate that any declared `result` keys have values on the
 class DoSomething < Actor # Superclass shortened for brevity
   no_params
   result :foo
-  
+
   def call
     if false
       result.foo = 'bar'
-    end      
+    end
   end
 end
 
-result = DoSomething.call #=> Reducers::Errors::FailureError: 
+result = DoSomething.call #=> Reducers::Errors::FailureError:
 result[:successful] #=> false
 result[:messages]   #=> ["Actor operation failed: Actor implementation did not set required result: :foo"]
 ```
@@ -111,7 +119,7 @@ Speaking of `die`, that's how you signal that the operation has failed inside an
 class UpdateUser < Actor
   params :user, :attributes
   no_result
-  
+
   def call
     unless params.user.update(params.attributes)
       die params.user.errors.full_messages
@@ -136,7 +144,7 @@ If you want to accumulate a few messages imperatively before signaling failure, 
 class DoSomething < Actor
   no_params
   no_result
-  
+
   def call
     do_something_that_fails
   rescue SomethingFailed
@@ -158,7 +166,7 @@ If you find a use case to have an actor report a message even if the actor succe
 class RegisterCreditCardWithMerchant < Actor
   params user: required, credit_card_number: required
   no_result
-  
+
   def call
     merchant_response = Merchant.add_card(params.user.id, params.credit_card_number)
     add_message merchant_response.description
@@ -180,7 +188,7 @@ One last note on actor `call` definitions: by using `params :whatever`, you get 
 class DoSomething < Actor
   params :whatever
   no_result
-  
+
   def call
     puts params.whatever # this is cool
     puts whatever        # ...and so is this
@@ -196,13 +204,13 @@ An actor also has the ability to precondition its execution on some arbitrary co
 class DoSomething < Actor
   no_params
   no_result
-  
+
   precondition :something_needs_done?
-  
+
   def call
     puts 'executed'
   end
-  
+
   def something_needs_done?
     true
   end
@@ -384,37 +392,33 @@ end
 `Organizer` instances group multiple actors together:
 
 ```ruby
-module Borrower
-  LoanMaintenance = Reducers::Organizer.create do
-    add SetLoanTermOnDisbursementWindowClose
-    add JournalPeriod
-    add GeneratePaymentSchedule
-    add RemindBorrowerOfUpcomingPayment
-  end
+CommunicationTasks = Reducers::Organizer.create do
+  add CallMom
+  add SendBirthdayCardsForToday
+  add EmailBestFriend
 end
 ```
 
 They respond to the same public interfaces as actors, except they return a slightly different result:
 
 ```ruby
-result = Borrower::LoanMaintenance.call(period: period, loan: loan)
+result = CommunicationTasks.call(contacts: get_contacts)
 
 result #=> [{ successful: true, messages: [] },
+       #    { successful: false, messages: ['No birthdays today'] }
        #    { successful: true, messages: [] },
-       #    { successful: false, messages: ['Payment schedule document failed to save'] },
-       #    { successful: true, messages: [] }]
-       
+
 # Also drops a log entry:
-# WARNING: Actor GeneratePaymentSchedule failed within an organizer. Messages: ["Payment schedule document failed to save"]       
+# WARNING: Actor SendBirthdayCardsForToday failed within an organizer. Messages: ["No birthdays today"]
 ```
 
-One thing you migth notice about the above example is that the 3rd actor failed (note the log message), but the 4th actor still ran. `Organizer#call` doesn't short-circuit the operation, but `Organizer#call!` does:
+One thing you migth notice about the above example is that the second actor failed (note the log message), but the third actor still ran. `Organizer#call` doesn't short-circuit the operation, but `Organizer#call!` does:
 
 ```ruby
-Borrower::LoanMaintenance.call!(period: period, loan: loan) #=> :boom: Reducers::Errors::FailureError: Payment schedule document failed to save
+CommunicationTasks.call!(contacts: get_contacts) #=> :boom: Reducers::Errors::FailureError: No birthdays today
 ```
 
-...and it also raises the same exception that `Actor::call!` does, since internally `Organizer` uses that actor method instead of `Actor::call`. In the above example, `RemindBorrowerOfUpcomingPayment` is never called.
+...and it also raises the same exception that `Actor::call!` does, since internally `Organizer` uses that actor method instead of `Actor::call`. In the above example, `EmailBestFriend` is never called.
 
 An organizer can be created and managed in a more imperative-looking way:
 
@@ -434,7 +438,7 @@ To facilate transactional organizers, use `around` when creating an organizer:
 DoSomething = Reducers::Organizer.create do
   add Something
   add SomethingElse
-  
+
   around do |&actors|
     DatabaseAdapter.transaction do
       actors.call
@@ -453,7 +457,7 @@ If you want to take action in response to an actor failure, use `on_failure`:
 DoSomething = Reducers::Organizer.create do
   add Something
   add SomethingElse
-  
+
   on_failure do |result|
     AdminNotifier.notify(result[:messages])
   end
@@ -468,11 +472,11 @@ The `on_failure` block receives one argument: the `result` hash of the actor tha
 DoSomething = Reducers::Organizer.create do
   add Something
   add SomethingElse
-  
+
   around do |&actors|
     DatabaseAdapter.transaction(&actors)
   end
-  
+
   on_failure do |result|
     raise DatabaseAdapter::Rollback
   end
@@ -484,7 +488,7 @@ end
 Actor preconditions and guard clauses will tend to be fairly general. In other words, an actor might need to be invoked directly to handle a specific use case, but also invoked on some schedule to respond to a conceptual event, such as the passing of a certain time. Organizers can assign additional preconditions at the actor level to add to the precondition check the actor will perform:
 
 ```ruby
-class DoSomething < Actor
+class SomethingElse < Actor
   params foo: :required
   no_result
 
@@ -516,7 +520,7 @@ Organizer-level preconditions and actor preconditions are additive. Above, `foo`
 class FindThing < Actor
   params :thing_id
   result :thing
-  
+
   def call
     result.thing = ThingAPI.lookup(id: thing_id)
   end
@@ -525,7 +529,7 @@ end
 class UpdateThing < Actor
   params :thing, :thing_attributes
   no_result
-  
+
   def call
     unless ThingAPI.update(thing_id: thing.uuid, **thing_attributes)
       die "Thing #{thing.id} was not updated"
@@ -536,7 +540,7 @@ end
 class NotifyUserThingHappened < Actor
   params :user, :thing
   no_result
-  
+
   def call
     ThingMailer.default_notification(user, thing).deliver_later
   end
